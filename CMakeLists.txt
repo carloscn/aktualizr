@@ -18,7 +18,7 @@ else()
     set(TESTSUITE_VALGRIND_DEFAULT OFF)
 endif()
 
-option(WARNING_AS_ERROR "Treat warnings as errors" ON)
+option(WARNING_AS_ERROR "Treat warnings as errors" OFF)
 option(PEDANTIC_WARNINGS "Compile with pedantic warnings" OFF)
 option(BUILD_WITH_CODE_COVERAGE "Enable gcov code coverage" OFF)
 option(BUILD_OSTREE "Set to ON to compile with OSTree support" OFF)
@@ -78,13 +78,6 @@ if(EXISTS /usr/local/opt/libarchive)
   list(APPEND CMAKE_PREFIX_PATH /usr/local/opt/libarchive)
 endif()
 
-find_package(Boost 1.58.0 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
-find_package(CURL REQUIRED)
-find_package(OpenSSL 1.0.2 REQUIRED)
-find_package(Threads REQUIRED)
-find_package(LibArchive REQUIRED)
-find_package(sodium REQUIRED)
-find_package(SQLite3 REQUIRED)
 find_package(Git)
 find_package(Asn1c REQUIRED)
 
@@ -300,10 +293,29 @@ endfunction()
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Export compile_commands.json for clang-tidy
+# set(compile_commands.json for clang-tidy
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 ############### BUILD RULES
+set(JSONCPP_INCLUDE_DIRS $ENV{CMAKE_JSONCPP_INC})
+set(Boost_INCLUDE_DIR $ENV{CMAKE_BOOST_INC})
+set(LIBOSTREE_INCLUDE_DIRS $ENV{CMAKE_OSTREE_INC})
+set(SQLITE3_INCLUDE_DIRS $ENV{CMAKE_SQLITE3_INC})
+set(sodium_INCLUDE_DIR $ENV{CMAKE_SODIUM_INC})
+set(OPENSSL_INCLUDE_DIR $ENV{CMAKE_OPENSSL_INC})
+set(CURL_INCLUDE_DIR $ENV{CMAKE_CURL_INC})
+set(LibArchive_INCLUDE_DIR $ENV{CMAKE_ARCHIVE_INC})
+set(Boost_SYSTEM_LIBRARIES $ENV{CMAKE_BOOST_SYS_LIB_FILE})
+set(Boost_LIBRARIES $ENV{CMAKE_BOOST_LIB_FILE})
+set(CURL_LIBRARIES $ENV{CMAKE_CURL_LIB_FILE})
+set(OPENSSL_LIBRARIES $ENV{CMAKE_OPENSSL_LIB_FILE})
+set(sodium_LIBRARY_RELEASE $ENV{CMAKE_SODIUM_LIB_FILE})
+set(LIBOSTREE_LIBRARIES $ENV{CMAKE_OSTREE_LIB_FILE})
+set(SQLITE3_LIBRARIES $ENV{CMAKE_SQLITE3_LIB_FILE})
+set(LibArchive_LIBRARIES $ENV{CMAKE_ARCHIVE_LIB_FILE})
+set(LIBP11_LIBRARIES $ENV{CMAKE_P11_LIB_FILE})
+set(GLIB2_LIBRARIES $ENV{CMAKE_GLIB2_LIB_FILE})
+
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_SOURCE_DIR}/src/libaktualizr)
 include_directories(${PROJECT_SOURCE_DIR}/third_party/googletest/googletest/include)
@@ -346,7 +358,6 @@ set(CPACK_DEBIAN_AKTUALIZR_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_AKTUALIZR_PACKAGE_CONTROL_EXTRA "${PROJECT_SOURCE_DIR}/config/systemd/debian-control/postinst;${PROJECT_SOURCE_DIR}/config/systemd/debian-control/prerm;${PROJECT_SOURCE_DIR}/config/systemd/debian-control/postrm;")
 include(CPack)
 include(CPackComponent)
-
 
 set (AKTUALIZR_EXTERNAL_LIBS
     ${Boost_SYSTEM_LIBRARIES}
