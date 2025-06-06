@@ -1076,7 +1076,7 @@ void SQLStorage::saveInstalledVersion(const std::string& ecu_serial, const Uptan
   std::string hashes_encoded = Hash::encodeVector(target.hashes());
 
   // get the last time this version was installed on this ecu
-  boost::optional<int64_t> old_id;
+  boost::optional<int64_t> old_id = 0;
   bool old_was_installed = false;
   {
     auto statement = db.prepareStatement<std::string>(

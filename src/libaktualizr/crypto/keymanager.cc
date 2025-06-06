@@ -9,9 +9,6 @@
 #include "libaktualizr/types.h"
 #include "storage/invstorage.h"
 
-// by using constexpr the compiler can optimize out method calls when the
-// feature is disabled. We won't then need to link with the actual p11 engine
-// implementation
 #ifdef BUILD_P11
 static constexpr bool built_with_p11 = true;
 #else
@@ -21,7 +18,7 @@ static constexpr bool built_with_p11 = false;
 KeyManager::KeyManager(std::shared_ptr<INvStorage> backend, KeyManagerConfig config)
     : backend_(std::move(backend)), config_(std::move(config)) {
   if (built_with_p11) {
-    p11_ = std_::make_unique<P11EngineGuard>(config_.p11);
+    p11_ = std::unique_ptr<P11EngineGuard>(new P11EngineGuard(config_.p11));
   }
 }
 
@@ -36,7 +33,7 @@ void KeyManager::loadKeys(const std::string *pkey_content, const std::string *ce
     }
     if (!pkey.empty()) {
       if (tmp_pkey_file == nullptr) {
-        tmp_pkey_file = std_::make_unique<TemporaryFile>("tls-pkey");
+        tmp_pkey_file = std::unique_ptr<TemporaryFile>(new TemporaryFile("tls-pkey"));
       }
       tmp_pkey_file->PutContents(pkey);
     }
@@ -50,7 +47,7 @@ void KeyManager::loadKeys(const std::string *pkey_content, const std::string *ce
     }
     if (!cert.empty()) {
       if (tmp_cert_file == nullptr) {
-        tmp_cert_file = std_::make_unique<TemporaryFile>("tls-cert");
+        tmp_cert_file = std::unique_ptr<TemporaryFile>(new TemporaryFile("tls-cert"));
       }
       tmp_cert_file->PutContents(cert);
     }
@@ -64,7 +61,7 @@ void KeyManager::loadKeys(const std::string *pkey_content, const std::string *ce
     }
     if (!ca.empty()) {
       if (tmp_ca_file == nullptr) {
-        tmp_ca_file = std_::make_unique<TemporaryFile>("tls-ca");
+        tmp_ca_file = std::unique_ptr<TemporaryFile>(new TemporaryFile("tls-ca"));
       }
       tmp_ca_file->PutContents(ca);
     }
@@ -168,7 +165,7 @@ std::string KeyManager::getCN() const {
     if (!backend_->loadTlsCert(&cert)) {
       throw std::runtime_error(not_found_cert_message);
     }
-  } else {  // CryptoSource::kPkcs11
+  } else { // CryptoSource::kPkcs11
     if (!built_with_p11) {
       throw std::runtime_error("Aktualizr was built without PKCS#11 support, can't extract device_id");
     }
@@ -188,7 +185,7 @@ void KeyManager::getCertInfo(std::string *subject, std::string *issuer, std::str
     if (!backend_->loadTlsCert(&cert)) {
       throw std::runtime_error(not_found_cert_message);
     }
-  } else {  // CryptoSource::kPkcs11
+  } else { // CryptoSource::kPkcs11
     if (!built_with_p11) {
       throw std::runtime_error("Aktualizr was built without PKCS#11 support, can't extract device certificate");
     }
@@ -197,50 +194,42 @@ void KeyManager::getCertInfo(std::string *subject, std::string *issuer, std::str
     }
   }
 
-  StructGuard<BIO> bio(BIO_new_mem_buf(const_cast<char *>(cert.c_str()), static_cast<int>(cert.size())), BIO_vfree);
+  StructGuard<BIO> bio(BIO_new_mem_buf(const_cast<char *>(cert.c_str()), static_cast<int>(cert.size())), [](BIO *b) { BIO_free(b); });
   StructGuard<X509> x(PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr), X509_free);
   if (x == nullptr) {
     throw std::runtime_error("Could not parse certificate");
   }
 
-  StructGuard<BIO> subj_bio(BIO_new(BIO_s_mem()), BIO_vfree);
+  StructGuard<BIO> subj_bio(BIO_new(BIO_s_mem()), [](BIO *b) { BIO_free(b); });
   X509_NAME_print_ex(subj_bio.get(), X509_get_subject_name(x.get()), 1, 0);
   char *subj_buf = nullptr;
-  auto subj_len = BIO_get_mem_data(subj_bio.get(), &subj_buf);  // NOLINT(cppcoreguidelines-pro-type-cstyle-cast)
+  auto subj_len = BIO_get_mem_data(subj_bio.get(), &subj_buf);
   if (subj_buf == nullptr) {
     throw std::runtime_error("Could not parse certificate subject");
   }
   *subject = std::string(subj_buf, static_cast<size_t>(subj_len));
 
-  StructGuard<BIO> issuer_bio(BIO_new(BIO_s_mem()), BIO_vfree);
+  StructGuard<BIO> issuer_bio(BIO_new(BIO_s_mem()), [](BIO *b) { BIO_free(b); });
   X509_NAME_print_ex(issuer_bio.get(), X509_get_issuer_name(x.get()), 1, 0);
   char *issuer_buf = nullptr;
-  auto issuer_len = BIO_get_mem_data(issuer_bio.get(), &issuer_buf);  // NOLINT(cppcoreguidelines-pro-type-cstyle-cast)
+  auto issuer_len = BIO_get_mem_data(issuer_bio.get(), &issuer_buf);
   if (issuer_buf == nullptr) {
     throw std::runtime_error("Could not parse certificate issuer");
   }
   *issuer = std::string(issuer_buf, static_cast<size_t>(issuer_len));
 
-#if AKTUALIZR_OPENSSL_PRE_11
-  const ASN1_TIME *nb_asn1 = X509_get_notBefore(x.get());
-#else
   const ASN1_TIME *nb_asn1 = X509_get0_notBefore(x.get());
-#endif
-  StructGuard<BIO> nb_bio(BIO_new(BIO_s_mem()), BIO_vfree);
+  StructGuard<BIO> nb_bio(BIO_new(BIO_s_mem()), [](BIO *b) { BIO_free(b); });
   ASN1_TIME_print(nb_bio.get(), nb_asn1);
   char *nb_buf;
-  auto nb_len = BIO_get_mem_data(nb_bio.get(), &nb_buf);  // NOLINT(cppcoreguidelines-pro-type-cstyle-cast)
+  auto nb_len = BIO_get_mem_data(nb_bio.get(), &nb_buf);
   *not_before = std::string(nb_buf, static_cast<size_t>(nb_len));
 
-#if AKTUALIZR_OPENSSL_PRE_11
-  const ASN1_TIME *na_asn1 = X509_get_notAfter(x.get());
-#else
   const ASN1_TIME *na_asn1 = X509_get0_notAfter(x.get());
-#endif
-  StructGuard<BIO> na_bio(BIO_new(BIO_s_mem()), BIO_vfree);
+  StructGuard<BIO> na_bio(BIO_new(BIO_s_mem()), [](BIO *b) { BIO_free(b); });
   ASN1_TIME_print(na_bio.get(), na_asn1);
   char *na_buf;
-  auto na_len = BIO_get_mem_data(na_bio.get(), &na_buf);  // NOLINT(cppcoreguidelines-pro-type-cstyle-cast)
+  auto na_len = BIO_get_mem_data(na_bio.get(), &na_buf);
   *not_after = std::string(na_buf, static_cast<size_t>(na_len));
 }
 
@@ -255,13 +244,11 @@ void KeyManager::copyCertsToCurl(HttpInterface &http) const {
 }
 
 Json::Value KeyManager::signTuf(const Json::Value &in_data) const {
-  ENGINE *crypto_engine = nullptr;
   std::string private_key;
   if (config_.uptane_key_source == CryptoSource::kPkcs11) {
     if (!built_with_p11) {
       throw std::runtime_error("Aktualizr was built without PKCS#11");
     }
-    crypto_engine = (*p11_)->getEngine();
     private_key = config_.p11.uptane_key_id;
   }
 
@@ -270,7 +257,7 @@ Json::Value KeyManager::signTuf(const Json::Value &in_data) const {
     backend_->loadPrimaryPrivate(&private_key);
   }
   b64sig = Utils::toBase64(
-      Crypto::Sign(config_.uptane_key_type, crypto_engine, private_key, Utils::jsonToCanonicalStr(in_data)));
+      Crypto::Sign(config_.uptane_key_type, private_key, Utils::jsonToCanonicalStr(in_data)));
 
   Json::Value signature;
   switch (config_.uptane_key_type) {
@@ -313,11 +300,9 @@ std::string KeyManager::generateUptaneKeyPair() {
     if (!built_with_p11) {
       throw std::runtime_error("Aktualizr was built without PKCS#11 support!");
     }
-    // dummy read to check if the key is present
     if (!(*p11_)->readUptanePublicKey(&primary_public)) {
       (*p11_)->generateUptaneKeyPair();
     }
-    // really read the key
     if (primary_public.empty() && !(*p11_)->readUptanePublicKey(&primary_public)) {
       throw std::runtime_error("Could not get Uptane keys");
     }
@@ -335,7 +320,6 @@ PublicKey KeyManager::UptanePublicKey() const {
     if (!built_with_p11) {
       throw std::runtime_error("Aktualizr was built without PKCS#11 support!");
     }
-    // dummy read to check if the key is present
     if (!(*p11_)->readUptanePublicKey(&primary_public)) {
       throw std::runtime_error("Could not get Uptane public key!");
     }

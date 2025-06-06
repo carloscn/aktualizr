@@ -9,24 +9,24 @@
 #include <openssl/pem.h>
 #include <boost/algorithm/hex.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/scoped_array.hpp>
+#include <boost/format.hpp>
 
-#include "crypto/crypto.h"
+#include "crypto.h"
 #include "utilities/config_utils.h"
 #include "utilities/utils.h"
 
-P11Engine* P11EngineGuard::instance = nullptr;
-int P11EngineGuard::ref_counter = 0;
+P11EngineGuard::instance* P11EngineGuard::instance = nullptr;
+int ref_counter = 0;
 
 P11ContextWrapper::P11ContextWrapper(const boost::filesystem::path& module) {
   if (module.empty()) {
     ctx = nullptr;
     return;
   }
-  // never returns NULL
   ctx = PKCS11_CTX_new();
   if (PKCS11_CTX_load(ctx, module.c_str()) != 0) {
     PKCS11_CTX_free(ctx);
+    ctx = nullptr;
     LOG_ERROR << "Couldn't load PKCS11 module " << module.string() << ": "
               << ERR_error_string(ERR_get_error(), nullptr);
     throw std::runtime_error("PKCS11 error");
@@ -48,8 +48,7 @@ P11SlotsWrapper::P11SlotsWrapper(PKCS11_ctx_st* ctx_in) {
     return;
   }
   if (PKCS11_enumerate_slots(ctx, &wslots_, &nslots) != 0) {
-    LOG_ERROR << "Couldn't enumerate slots"
-              << ": " << ERR_error_string(ERR_get_error(), nullptr);
+    LOG_ERROR << "Couldn't enumerate slots: " << ERR_error_string(ERR_get_error(), nullptr);
     throw std::runtime_error("PKCS11 error");
   }
 }
@@ -60,12 +59,13 @@ P11SlotsWrapper::~P11SlotsWrapper() {
   }
 }
 
-P11Engine::P11Engine(P11Config config) : config_(std::move(config)), ctx_(config_.module), slots_(ctx_.get()) {
+P11Engine::P11Engine(P11Config config) : config_(std::move(config)), ctx_(config_.module), P11slots_(ctx_.get()) {
+#ifdef BUILD_P11
   if (config_.module.empty()) {
     return;
   }
 
-  PKCS11_SLOT* slot = PKCS11_find_token(ctx_.get(), slots_.get_slots(), slots_.get_nslots());
+  PKCS11_SLOT* slot = PKCS11_find_token(ctx_.get(), P11slots_.get_slots(), P11slots_.get_nslots());
   if ((slot == nullptr) || (slot->token == nullptr)) {
     throw std::runtime_error("Couldn't find pkcs11 token");
   }
@@ -79,16 +79,15 @@ P11Engine::P11Engine(P11Config config) : config_(std::move(config)), ctx_(config
 
   uri_prefix_ = std::string("pkcs11:serial=") + slot->token->serialnr + ";pin-value=" + config_.pass + ";id=%";
 
-  ENGINE_load_builtin_engines();
-  ENGINE* engine = ENGINE_by_id("dynamic");
+  const boost::filesystem::path pkcs11Path = findPkcsLibrary();
+  LOG_INFO << "Loading PKCS#11 engine library: " << pkcs11Path.string();
 
+  ENGINE *engine = ENGINE_by_id("dynamic");
   if (engine == nullptr) {
     throw std::runtime_error("SSL pkcs11 engine initialization failed");
   }
 
   try {
-    const boost::filesystem::path pkcs11Path = findPkcsLibrary();
-    LOG_INFO << "Loading PKCS#11 engine library: " << pkcs11Path.string();
     if (ENGINE_ctrl_cmd_string(engine, "SO_PATH", pkcs11Path.c_str(), 0) == 0) {
       throw std::runtime_error(std::string("P11 engine command failed: SO_PATH ") + pkcs11Path.string());
     }
@@ -117,14 +116,12 @@ P11Engine::P11Engine(P11Config config) : config_(std::move(config)), ctx_(config
       throw std::runtime_error("P11 engine initialization failed");
     }
   } catch (const std::runtime_error& exc) {
-    // Note: treat these in a special case, as ENGINE_finish cannot be called on
-    // an engine which has not been fully initialized
     ENGINE_free(engine);
-    ENGINE_cleanup();  // for openssl < 1.1
     throw;
   }
 
   ssl_engine_ = engine;
+#endif
 }
 
 boost::filesystem::path P11Engine::findPkcsLibrary() {
@@ -138,8 +135,8 @@ boost::filesystem::path P11Engine::findPkcsLibrary() {
   return engine_path;
 }
 
-PKCS11_SLOT* P11Engine::findTokenSlot() const {
-  PKCS11_SLOT* slot = PKCS11_find_token(ctx_.get(), slots_.get_slots(), slots_.get_nslots());
+PKCS11_slot_st* P11Engine::findTokenSlot() const {
+  PKCS11_slot_st* slot = PKCS11_find_token(ctx_.get(), P11slots_.get_slots(), P11slots_.get_nslots());
   if ((slot == nullptr) || (slot->token == nullptr)) {
     LOG_ERROR << "Couldn't find a token";
     return nullptr;
@@ -164,10 +161,10 @@ bool P11Engine::readUptanePublicKey(std::string* key_out) {
     return false;
   }
   if ((config_.uptane_key_id.length() % 2) != 0U) {
-    return false;  // id is a hex string
+    return false; // id is a hex string
   }
 
-  PKCS11_SLOT* slot = findTokenSlot();
+  PKCS11_slot_st* slot = findTokenSlot();
   if (slot == nullptr) {
     return false;
   }
@@ -185,11 +182,8 @@ bool P11Engine::readUptanePublicKey(std::string* key_out) {
     boost::algorithm::unhex(config_.uptane_key_id, std::back_inserter(id_hex));
 
     for (unsigned int i = 0; i < nkeys; i++) {
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
       if ((keys[i].id_len == config_.uptane_key_id.length() / 2) &&
-          // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
           (memcmp(keys[i].id, id_hex.data(), config_.uptane_key_id.length() / 2) == 0)) {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
         key = &keys[i];
         break;
       }
@@ -200,11 +194,13 @@ bool P11Engine::readUptanePublicKey(std::string* key_out) {
     return false;
   }
   StructGuard<EVP_PKEY> evp_key(PKCS11_get_public_key(key), EVP_PKEY_free);
-  StructGuard<BIO> mem(BIO_new(BIO_s_mem()), BIO_vfree);
-  PEM_write_bio_PUBKEY(mem.get(), evp_key.get());
+  StructGuard<BIO> mem(BIO_new(BIO_s_mem()), [](BIO *b) { BIO_free(b); });
+  if (mem.get() == nullptr || PEM_write_bio_PUBKEY(mem.get(), evp_key.get()) != 1) {
+    LOG_ERROR << "PEM_write_bio_PUBKEY failed: " << ERR_error_string(ERR_get_error(), nullptr);
+    return false;
+  }
 
   char* pem_key = nullptr;
-  // NOLINTNEXTLINE(google-runtime-int,cppcoreguidelines-pro-type-cstyle-cast)
   long length = BIO_get_mem_data(mem.get(), &pem_key);
   key_out->assign(pem_key, static_cast<size_t>(length));
 
@@ -212,7 +208,7 @@ bool P11Engine::readUptanePublicKey(std::string* key_out) {
 }
 
 bool P11Engine::generateUptaneKeyPair() {
-  PKCS11_SLOT* slot = findTokenSlot();
+  PKCS11_slot_st* slot = findTokenSlot();
   if (slot == nullptr) {
     return false;
   }
@@ -220,14 +216,9 @@ bool P11Engine::generateUptaneKeyPair() {
   std::vector<unsigned char> id_hex;
   boost::algorithm::unhex(config_.uptane_key_id, std::back_inserter(id_hex));
 
-  // Manually generate a key and store it on the HSM
-  // Note that libp11 has a dedicated function marked as deprecated, it
-  // worked the same way in version <= 0.4.7 but tries to generate the
-  // RSA key directly on the HSM from 0.4.8. As it would not work reliably
-  // with openssl 1.1, we reimplemented it here.
   StructGuard<EVP_PKEY> pkey = Crypto::generateRSAKeyPairEVP(KeyType::kRSA2048);
   if (pkey == nullptr) {
-    LOG_ERROR << "Error generating keypair on the device:" << ERR_error_string(ERR_get_error(), nullptr);
+    LOG_ERROR << "Error generating keypair on the device: " << ERR_error_string(ERR_get_error(), nullptr);
     return false;
   }
 
@@ -250,10 +241,10 @@ bool P11Engine::readTlsCert(std::string* cert_out) const {
     return false;
   }
   if ((id.length() % 2) != 0U) {
-    return false;  // id is a hex string
+    return false; // id is a hex string
   }
 
-  PKCS11_SLOT* slot = findTokenSlot();
+  PKCS11_slot_st* slot = findTokenSlot();
   if (slot == nullptr) {
     return false;
   }
@@ -272,9 +263,7 @@ bool P11Engine::readTlsCert(std::string* cert_out) const {
     boost::algorithm::unhex(id, std::back_inserter(id_hex));
 
     for (unsigned int i = 0; i < ncerts; i++) {
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
       if ((certs[i].id_len == id.length() / 2) && (memcmp(certs[i].id, id_hex.data(), id.length() / 2) == 0)) {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
         cert = &certs[i];
         break;
       }
@@ -284,11 +273,13 @@ bool P11Engine::readTlsCert(std::string* cert_out) const {
     LOG_ERROR << "Requested certificate was not found";
     return false;
   }
-  StructGuard<BIO> mem(BIO_new(BIO_s_mem()), BIO_vfree);
-  PEM_write_bio_X509(mem.get(), cert->x509);
+  StructGuard<BIO> mem(BIO_new(BIO_s_mem()), [](BIO *b) { BIO_free(b); });
+  if (mem.get() == nullptr || PEM_write_bio_X509(mem.get(), cert->x509) != 1) {
+    LOG_ERROR << "PEM_write_bio_X509 failed: " << ERR_error_string(ERR_get_error(), nullptr);
+    return false;
+  }
 
   char* pem_key = nullptr;
-  // NOLINTNEXTLINE(google-runtime-int,cppcoreguidelines-pro-type-cstyle-cast)
   long length = BIO_get_mem_data(mem.get(), &pem_key);
   cert_out->assign(pem_key, static_cast<size_t>(length));
 

@@ -5,16 +5,18 @@
 
 #include "libaktualizr/config.h"
 
+#ifdef BUILD_P11
 #include <openssl/engine.h>
 #include <openssl/err.h>
-#include "gtest/gtest_prod.h"
+#endif
 
+#include "gtest/gtest_prod.h"
 #include "logging/logging.h"
 
 class P11ContextWrapper {
  public:
   explicit P11ContextWrapper(const boost::filesystem::path &module);
-  ~P11ContextWrapper();  // NOLINT(performance-trivially-destructible)
+  ~P11ContextWrapper();
   P11ContextWrapper(const P11ContextWrapper &) = delete;
   P11ContextWrapper &operator=(const P11ContextWrapper &) = delete;
   PKCS11_ctx_st *get() const { return ctx; }
@@ -26,14 +28,14 @@ class P11ContextWrapper {
 class P11SlotsWrapper {
  public:
   explicit P11SlotsWrapper(PKCS11_ctx_st *ctx_in);
-  ~P11SlotsWrapper();  // NOLINT(performance-trivially-destructible)
+  ~P11SlotsWrapper();
   P11SlotsWrapper(const P11SlotsWrapper &) = delete;
   P11SlotsWrapper &operator=(const P11SlotsWrapper &) = delete;
   PKCS11_slot_st *get_slots() const { return wslots_; }
   unsigned int get_nslots() const { return nslots; }
 
  private:
-  PKCS11_ctx_st *ctx;  // NOLINT
+  PKCS11_ctx_st *ctx;
   PKCS11_slot_st *wslots_;
   unsigned int nslots;
 };
@@ -46,14 +48,18 @@ class P11Engine {
   P11Engine &operator=(const P11Engine &) = delete;
 
   virtual ~P11Engine() {
+#ifdef BUILD_P11
     if (ssl_engine_ != nullptr) {
-      ENGINE_finish(ssl_engine_);
       ENGINE_free(ssl_engine_);
-      ENGINE_cleanup();  // for openssl < 1.1
     }
+#endif
   }
 
+#ifdef BUILD_P11
   ENGINE *getEngine() { return ssl_engine_; }
+#else
+  void *getEngine() { return nullptr; }
+#endif
   std::string getUptaneKeyId() const { return uri_prefix_ + config_.uptane_key_id; }
   std::string getTlsCacertId() const { return uri_prefix_ + config_.tls_cacert_id; }
   std::string getTlsPkeyId() const { return uri_prefix_ + config_.tls_pkey_id; }
@@ -64,7 +70,11 @@ class P11Engine {
 
  private:
   const P11Config config_;
+#ifdef BUILD_P11
   ENGINE *ssl_engine_{nullptr};
+#else
+  void *ssl_engine_{nullptr};
+#endif
   std::string uri_prefix_;
   P11ContextWrapper ctx_;
   P11SlotsWrapper slots_;
@@ -83,12 +93,17 @@ class P11Engine {
 class P11EngineGuard {
  public:
   explicit P11EngineGuard(const P11Config &config) {
+#ifdef BUILD_P11
     if (instance == nullptr) {
       instance = new P11Engine(config);
     }
     ++ref_counter;
+#else
+    (void)config; // Suppress unused parameter warning
+#endif
   };
   ~P11EngineGuard() {
+#ifdef BUILD_P11
     if (ref_counter != 0) {
       --ref_counter;
     }
@@ -96,6 +111,7 @@ class P11EngineGuard {
       delete instance;
       instance = nullptr;
     }
+#endif
   }
   P11Engine *operator->() const { return instance; }
 
