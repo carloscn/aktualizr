@@ -1,0 +1,21 @@
+[logger]
+loglevel = 1
+
+[network]
+port = 9032
+primary_ip = "172.20.15.30"
+primary_port = 9020
+
+[uptane]
+"ecu_hardware_id" = "cdc-tda4"
+"key_source" = "file"
+"key_type" = "RSA2048"
+"force_install_completion" = true
+
+[pacman]
+type = "none"
+images_path = "/mnt/autox_app/fota/images"
+packages_file = "/mnt/autox_app/fota/package/manifest"
+
+[storage]
+path = "/mnt/autox_app/fota/storage"

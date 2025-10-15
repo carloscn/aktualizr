@@ -53,7 +53,7 @@ fi
 # 清理并创建包目录
 echo "Creating package directory structure..."
 rm -rf "$PACKAGE_DIR"
-mkdir -p "$PACKAGE_DIR"/{bin,lib,appdata}
+mkdir -p "$PACKAGE_DIR"/{bin,lib,appdata,config}
 
 # 复制二进制文件
 echo "Copying binary files..."
@@ -123,17 +123,26 @@ done
 
 # 手动复制已知的依赖库
 echo "Copying known dependency libraries from sysroot..."
+
+# 获取所有 boost 库
+echo "  Collecting all boost libraries..."
+BOOST_LIBS=$(find "$SYSROOT" -name "libboost_*.so*" 2>/dev/null)
+for boost_lib in $BOOST_LIBS; do
+    if [ -f "$boost_lib" ]; then
+        lib_name=$(basename "$boost_lib")
+        echo "    Copying boost library: $lib_name"
+        cp "$boost_lib" "$PACKAGE_DIR/lib/"
+    fi
+done
+
+# 其他依赖库
 DEPENDENCY_LIBS=(
     "libssl.so.1.1"
     "libcrypto.so.1.1"
-    "libboost_system.so.1.78.0"
-    "libboost_filesystem.so.1.78.0"
-    "libboost_log.so.1.78.0"
-    "libboost_log_setup.so.1.78.0"
-    "libboost_program_options.so.1.78.0"
     "libcurl.so.4"
     "libarchive.so.13"
-    "libsodium.so.23"
+    "libsodium.so.26"
+    "libsodium.so.26.2.0"
     "libsqlite3.so.0"
     "libpthread.so.0"
     "libdl.so.2"
@@ -167,6 +176,169 @@ for lib in *.so.*; do
 done
 cd - >/dev/null
 
+# 复制配置文件
+echo "Copying configuration files..."
+if [ -f "examples/secondary.toml" ]; then
+    echo "  Copying secondary.toml configuration"
+    cp "examples/secondary.toml" "$PACKAGE_DIR/config/"
+else
+    echo "  Warning: examples/secondary.toml not found, creating default configuration"
+    cat > "$PACKAGE_DIR/config/secondary.toml" << 'CONFIGEOF'
+[logger]
+loglevel = 1
+
+[network]
+port = 9032
+primary_ip = "172.20.15.30"
+primary_port = 9020
+
+[uptane]
+"ecu_hardware_id" = "cdc-tda4"
+"key_source" = "file"
+"key_type" = "RSA2048"
+"force_install_completion" = true
+
+[pacman]
+type = "none"
+images_path = "/mnt/autox_app/fota/images"
+packages_file = "/mnt/autox_app/fota/package/manifest"
+
+[storage]
+path = "/mnt/autox_app/fota/storage"
+CONFIGEOF
+fi
+
+# 创建部署要求文档
+echo "Creating deployment requirements document..."
+cat > "$PACKAGE_DIR/appdata/DEPLOYMENT_REQUIREMENTS.md" << 'DEPLOYEOF'
+# aktualizr Secondary ECU Deployment Requirements
+
+## Prerequisites
+
+### 1. Directory Structure
+Create the following directories on your target system:
+
+```bash
+sudo mkdir -p /mnt/autox_app/fota/images
+sudo mkdir -p /mnt/autox_app/fota/package/manifest
+sudo mkdir -p /mnt/autox_app/fota/storage
+```
+
+### 2. Permissions
+Set appropriate permissions for the directories:
+
+```bash
+# Set ownership (replace 'username' with actual user)
+sudo chown -R username:username /mnt/autox_app/fota/
+
+# Set permissions
+sudo chmod -R 755 /mnt/autox_app/fota/
+sudo chmod 644 /mnt/autox_app/fota/package/manifest  # if file exists
+```
+
+### 3. Network Configuration
+Ensure network connectivity between Primary and Secondary ECUs:
+
+- **Primary ECU**: Must be accessible on the IP and port specified in secondary.toml
+- **Secondary ECU**: Must be able to bind to the port specified in secondary.toml
+- **Firewall**: Configure firewall rules to allow communication on specified ports
+
+## Configuration
+
+### 1. Update secondary.toml
+Edit `config/secondary.toml` with your specific settings:
+
+```toml
+[network]
+port = 9032                    # Port for Secondary to listen on
+primary_ip = "172.20.15.30"    # IP address of Primary ECU
+primary_port = 9020            # Port of Primary ECU
+
+[uptane]
+"ecu_hardware_id" = "cdc-tda4" # Hardware ID (must match your hardware)
+
+[pacman]
+type = "none"
+images_path = "/mnt/autox_app/fota/images"
+packages_file = "/mnt/autox_app/fota/package/manifest"
+
+[storage]
+path = "/mnt/autox_app/fota/storage"
+```
+
+### 2. Primary ECU Configuration
+Ensure your Primary ECU is configured to communicate with this Secondary:
+
+- Primary must have the Secondary's IP and port in its configuration
+- Primary must be configured to listen on the port specified in secondary.toml
+
+## Deployment Steps
+
+### 1. Extract Package
+```bash
+tar -xzf aktualizr-0806-*.tar.gz
+cd aktualizr-package
+```
+
+### 2. Install (Optional)
+```bash
+sudo ./install.sh
+```
+
+### 3. Run Secondary
+```bash
+# Using run script
+./run.sh aktualizr-secondary -c config/secondary.toml
+
+# Or directly
+export LD_LIBRARY_PATH=./lib:$LD_LIBRARY_PATH
+./bin/aktualizr-secondary -c config/secondary.toml
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Permission Denied**
+   - Check directory permissions
+   - Ensure user has write access to storage directory
+
+2. **Network Connection Failed**
+   - Verify IP addresses and ports in configuration
+   - Test network connectivity: `ping <primary_ip>`
+   - Check firewall settings
+
+3. **Library Loading Errors**
+   - Ensure LD_LIBRARY_PATH includes ./lib directory
+   - Use the provided run.sh script
+
+4. **Configuration Errors**
+   - Validate TOML syntax
+   - Check file paths exist and are accessible
+
+### Logging
+Enable verbose logging by setting loglevel to 0 in secondary.toml:
+
+```toml
+[logger]
+loglevel = 0
+```
+
+## Security Considerations
+
+1. **File Permissions**: Restrict access to configuration and storage directories
+2. **Network Security**: Use secure communication channels in production
+3. **Key Management**: Ensure proper key file permissions and storage
+4. **Firewall**: Configure appropriate firewall rules for ECU communication
+
+## Support
+
+For additional support, refer to:
+- aktualizr documentation
+- TI Processor SDK documentation
+- Uptane specification
+DEPLOYEOF
+
 # 创建 appdata 目录内容
 echo "Creating appdata directory..."
 cat > "$PACKAGE_DIR/appdata/README.txt" << EOF
@@ -180,16 +352,38 @@ SDK Directory: $SDK_INSTALL_DIR
 Contents:
 - bin/: Executable files
 - lib/: Library files and dependencies
+- config/: Configuration files
 - run.sh: Runtime script with library path configuration
+- install.sh: Installation script
 
 Usage:
 1. Extract this package to your target system
 2. Run ./run.sh to execute aktualizr with proper library paths
 3. Or manually set LD_LIBRARY_PATH to point to the lib/ directory
 
+Deployment Requirements:
+1. Create required directories on target system:
+   - /mnt/autox_app/fota/images (for firmware images)
+   - /mnt/autox_app/fota/package/manifest (for package manifest)
+   - /mnt/autox_app/fota/storage (for aktualizr storage)
+   
+2. Set proper permissions:
+   - All directories must have write permissions for the user running aktualizr
+   - Recommended: chmod 755 for directories, chmod 644 for files
+
+3. Configure secondary.toml:
+   - Update [network] section with correct IP addresses and ports
+   - Ensure primary_ip and primary_port match your Primary ECU configuration
+   - Verify ecu_hardware_id matches your hardware
+
+4. Network Configuration:
+   - Ensure Primary and Secondary ECUs can communicate on specified ports
+   - Configure firewall rules if necessary
+   - Test network connectivity between ECUs
+
 Dependencies:
 - OpenSSL 1.1.1f
-- Boost 1.78.0
+- Boost 1.78.0 (all boost libraries included)
 - libsodium 1.0.20
 - libcurl, libarchive, sqlite3
 EOF
@@ -226,6 +420,7 @@ show_usage() {
     echo "Examples:"
     echo "  $0 aktualizr --help"
     echo "  $0 aktualizr-info"
+    echo "  $0 aktualizr-secondary -c config/secondary.toml"
     echo "  $0 uptane-generator --help"
 }
 
@@ -320,6 +515,7 @@ echo ""
 echo "Package contents:"
 echo "  bin/ - $(ls -1 "$PACKAGE_DIR/bin" | wc -l) executable files"
 echo "  lib/ - $(ls -1 "$PACKAGE_DIR/lib" | wc -l) library files"
+echo "  config/ - Configuration files (secondary.toml)"
 echo "  appdata/ - Documentation and metadata"
 echo "  run.sh - Runtime script"
 echo "  install.sh - Installation script"
