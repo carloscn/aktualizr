@@ -33,17 +33,17 @@ elif [ "$BSP_VERSION" = "0902" ]; then
     RANLIB="$TOOLCHAIN_DIR/aarch64-oe-linux-ranlib"
 fi
 
-LIBSODIUM_VERSION="1.0.20"
-LIBSODIUM_DIR="libsodium-$LIBSODIUM_VERSION"
-LIBSODIUM_URL="https://download.libsodium.org/libsodium/releases/libsodium-$LIBSODIUM_VERSION.tar.gz"
+OPENSSL_VERSION="1.1.1f"
+OPENSSL_DIR="openssl-$OPENSSL_VERSION"
+OPENSSL_URL="https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz"
 WORK_DIR="$PWD"
 
 # Display current configuration
 echo "=========================================="
-echo "Cross-compiling libsodium for TI Processor SDK"
+echo "Cross-compiling OpenSSL for TI Processor SDK"
 echo "BSP Version: $BSP_VERSION"
 echo "SDK Directory: $SDK_INSTALL_DIR"
-echo "libsodium Version: $LIBSODIUM_VERSION"
+echo "OpenSSL Version: $OPENSSL_VERSION"
 echo "=========================================="
 
 if [ ! -f "$C_COMPILER" ] || [ ! -f "$CXX_COMPILER" ]; then
@@ -58,45 +58,69 @@ fi
 mkdir -p "$WORK_DIR" || { echo "Error: Failed to create $WORK_DIR"; exit 1; }
 cd "$WORK_DIR" || { echo "Error: Failed to change to $WORK_DIR"; exit 1; }
 
-# 下载 libsodium
-if [ ! -f "$LIBSODIUM_DIR.tar.gz" ]; then
-    echo "Downloading libsodium $LIBSODIUM_VERSION..."
+# 下载 OpenSSL
+if [ ! -f "$OPENSSL_DIR.tar.gz" ]; then
+    echo "Downloading OpenSSL $OPENSSL_VERSION..."
     # Try curl first, fallback to wget if curl fails
     if command -v curl >/dev/null 2>&1; then
-        curl -L -o "$LIBSODIUM_DIR.tar.gz" "$LIBSODIUM_URL" || { echo "Error: Failed to download libsodium with curl"; exit 1; }
+        curl -L -o "$OPENSSL_DIR.tar.gz" "$OPENSSL_URL" || { echo "Error: Failed to download OpenSSL with curl"; exit 1; }
     else
-        wget --no-check-certificate "$LIBSODIUM_URL" || { echo "Error: Failed to download libsodium with wget"; exit 1; }
+        wget --no-check-certificate "$OPENSSL_URL" || { echo "Error: Failed to download OpenSSL with wget"; exit 1; }
     fi
 fi
 
-if [ ! -d "$LIBSODIUM_DIR" ]; then
-    echo "Extracting libsodium $LIBSODIUM_VERSION..."
-    tar -xzf "$LIBSODIUM_DIR.tar.gz" || { echo "Error: Failed to extract libsodium"; exit 1; }
+if [ ! -d "$OPENSSL_DIR" ]; then
+    echo "Extracting OpenSSL $OPENSSL_VERSION..."
+    tar -xzf "$OPENSSL_DIR.tar.gz" || { echo "Error: Failed to extract OpenSSL"; exit 1; }
 fi
-cd "$LIBSODIUM_DIR" || { echo "Error: Failed to change to $LIBSODIUM_DIR"; exit 1; }
+cd "$OPENSSL_DIR" || { echo "Error: Failed to change to $OPENSSL_DIR"; exit 1; }
 
-echo "Configuring libsodium..."
-export CC="$C_COMPILER --sysroot=$SYSROOT"
-export CXX="$CXX_COMPILER --sysroot=$SYSROOT"
-export CFLAGS="-fPIC -O2"
-export LDFLAGS="--sysroot=$SYSROOT"
+echo "Configuring OpenSSL..."
+
+# 根据 BSP 版本设置目标平台
+if [ "$BSP_VERSION" = "0806" ]; then
+    TARGET_PLATFORM="linux-aarch64"
+    CROSS_COMPILE_PREFIX="aarch64-none-linux-gnu-"
+elif [ "$BSP_VERSION" = "0902" ]; then
+    TARGET_PLATFORM="linux-aarch64"
+    CROSS_COMPILE_PREFIX="aarch64-oe-linux-"
+fi
+
+# 设置交叉编译环境变量
+export CC="$C_COMPILER"
+export CXX="$CXX_COMPILER"
 export AR="$AR"
 export RANLIB="$RANLIB"
-./configure --host=aarch64-oe-linux --prefix="$SYSROOT/usr" || { echo "Error: Configure failed"; exit 1; }
+export PATH="$TOOLCHAIN_DIR:$PATH"
 
-echo "Building and installing libsodium..."
+# 配置 OpenSSL
+./Configure \
+    $TARGET_PLATFORM \
+    --prefix="$SYSROOT/usr" \
+    --openssldir="$SYSROOT/usr/ssl" \
+    --sysroot="$SYSROOT" \
+    shared \
+    zlib-dynamic \
+    no-ssl3 \
+    no-ssl3-method \
+    no-weak-ssl-ciphers \
+    -fPIC \
+    || { echo "Error: Configure failed"; exit 1; }
+
+echo "Building and installing OpenSSL..."
 make -j$(nproc) || { echo "Error: Build failed"; exit 1; }
-make install || { echo "Error: Install failed"; exit 1; }
+make install_sw || { echo "Error: Install failed"; exit 1; }
 
-echo "Verifying libsodium installation..."
-find "$SYSROOT/usr/lib" -name "libsodium*" | grep -q "libsodium" && \
-find "$SYSROOT/usr/include" -name "sodium.h" | grep -q "sodium.h" && \
-echo "libsodium installed successfully to $SYSROOT/usr" || \
-{ echo "Error: libsodium installation verification failed"; exit 1; }
+echo "Verifying OpenSSL installation..."
+find "$SYSROOT/usr/lib" -name "libssl*" | grep -q "libssl" && \
+find "$SYSROOT/usr/lib" -name "libcrypto*" | grep -q "libcrypto" && \
+find "$SYSROOT/usr/include" -name "openssl" | grep -q "openssl" && \
+echo "OpenSSL installed successfully to $SYSROOT/usr" || \
+{ echo "Error: OpenSSL installation verification failed"; exit 1; }
 
 echo "Cleaning up..."
 cd "$WORK_DIR"
-rm -rf "$LIBSODIUM_DIR" "$LIBSODIUM_DIR.tar.gz" || { echo "Warning: Cleanup failed"; }
+rm -rf "$OPENSSL_DIR" "$OPENSSL_DIR.tar.gz" || { echo "Warning: Cleanup failed"; }
 
-echo "libsodium cross-compilation and installation completed!"
+echo "OpenSSL cross-compilation and installation completed!"
 exit 0

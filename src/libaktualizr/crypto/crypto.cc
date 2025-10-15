@@ -423,7 +423,7 @@ KeyType Crypto::IdentifyRSAKeyType(const std::string &public_key_pem) {
     return KeyType::kUnknown;
   }
 
-  int key_length = EVP_PKEY_get_bits(pkey.get());
+  int key_length = EVP_PKEY_bits(pkey.get());
   switch (key_length) {
     case 2048:
       return KeyType::kRSA2048;
